@@ -110,37 +110,63 @@ app.get('/movie/:language/:id', async (req, res) => {
     // Get movie details from TMDB
     const movieDetails = await fetchMovieDetailsFromTMDB(id);
     
-    // Scrape download and streaming links
-    let movieLinks = await scrapeMovieLinks(language, movieDetails.title);
+    // Scrape download and streaming links - this is the main priority
+    let scrapedLinks = await scrapeMovieLinks(language, movieDetails.title);
     
     // For English movies, also fetch from HDHub4u
     if (language === 'english') {
       const hdhubLinks = await scrapeMovieLinks('english_hdhub', movieDetails.title);
       
-      // Merge links from both sources
-      movieLinks = {
-        download: [...movieLinks.download, ...hdhubLinks.download],
-        stream: [...movieLinks.stream, ...hdhubLinks.stream],
+      // Merge links from both sources, prioritizing link data over metadata
+      scrapedLinks = {
+        download: [...scrapedLinks.download, ...hdhubLinks.download].filter(Boolean),
+        stream: [...scrapedLinks.stream, ...hdhubLinks.stream].filter(Boolean),
         sources: {
           filmxy: {
-            download: movieLinks.download,
-            stream: movieLinks.stream
+            download: scrapedLinks.download || [],
+            stream: scrapedLinks.stream || []
           },
           hdhub4u: {
-            download: hdhubLinks.download,
-            stream: hdhubLinks.stream
+            download: hdhubLinks.download || [],
+            stream: hdhubLinks.stream || []
           }
         }
       };
     }
     
+    // Check if we actually got any links
+    const totalLinks = (scrapedLinks.download?.length || 0) + (scrapedLinks.stream?.length || 0);
+    if (totalLinks === 0) {
+      // If no links found, try alternative search approaches
+      console.log(`No links found for ${movieDetails.title}, trying alternative search...`);
+      
+      // Try with just the main title without any subtitles
+      const simpleTitle = movieDetails.title.split(':')[0].trim();
+      if (simpleTitle !== movieDetails.title) {
+        const alternativeLinks = await scrapeMovieLinks(language, simpleTitle);
+        if ((alternativeLinks.download?.length || 0) + (alternativeLinks.stream?.length || 0) > 0) {
+          scrapedLinks = alternativeLinks;
+        }
+      }
+      
+      // Try with release year
+      if ((scrapedLinks.download?.length || 0) + (scrapedLinks.stream?.length || 0) === 0 && movieDetails.release_date) {
+        const year = movieDetails.release_date.substring(0, 4);
+        const titleWithYear = `${movieDetails.title} ${year}`;
+        const yearLinks = await scrapeMovieLinks(language, titleWithYear);
+        if ((yearLinks.download?.length || 0) + (yearLinks.stream?.length || 0) > 0) {
+          scrapedLinks = yearLinks;
+        }
+      }
+    }
+    
     res.json({
       ...movieDetails,
-      links: movieLinks
+      links: scrapedLinks
     });
   } catch (error) {
     console.error('Error getting movie details:', error);
-    res.status(500).json({ error: 'Failed to get movie details' });
+    res.status(500).json({ error: 'Failed to get movie details', message: error.message });
   }
 });
 
